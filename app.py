@@ -58,11 +58,50 @@ with col_viewport:
     st.subheader("📹 UAV Optical Stream")
     viewport = st.empty()
 
-# 5. Main Detection Loop
+# 5. Main Detection Logic
 if run_patrol:
-    # Handle Input Source
+    
+    # --- CLOUD-SAFE WEBCAM LOGIC ---
     if feed_source == "Live Drone Telemetry (Webcam)":
-        cap = cv2.VideoCapture(0)
+        st.info("☁️ **Cloud Mode:** Click the button below to capture and analyze a telemetry frame.")
+        img_file_buffer = st.camera_input("Capture Telemetry Frame")
+        
+        if img_file_buffer is not None:
+            # Convert Streamlit browser image to OpenCV BGR format
+            bytes_data = img_file_buffer.getvalue()
+            frame = cv2.imdecode(np.frombuffer(bytes_data, np.uint8), cv2.IMREAD_COLOR)
+            
+            start_time = time.time()
+            
+            # YOLO11n Inference
+            results = model.predict(frame, conf=conf_thresh, verbose=False)
+            annotated_frame = results[0].plot()
+
+            # FPS/Speed Calculation for single frame
+            infer_time = time.time() - start_time
+            fps = 1 / infer_time if infer_time > 0 else 30
+
+            # Check for positive hazard triggers
+            detections = results[0].boxes
+            if len(detections) > 0:
+                top_conf = float(detections.conf[0])
+                threat_banner.error(f"🚨 CRITICAL HAZARD DETECTED!\n\n**Confidence:** {top_conf*100:.1f}%")
+                dispatch_log.code(
+                    f"[DISPATCH] Sector A-7 Anomaly\n[TYPE] Combustion/Explosion\n[TIME] {time.strftime('%H:%M:%S')}",
+                    language="text",
+                )
+            else:
+                threat_banner.success("🛡️ SECTOR CLEAR: Normal Patrol")
+                dispatch_log.caption("No localized anomalies registered.")
+
+            # Update Telemetry & Viewport
+            fps_metric.metric("Inference Velocity", f"{fps:.1f} FPS")
+
+            # Convert OpenCV BGR to Streamlit RGB
+            rgb_frame = cv2.cvtColor(annotated_frame, cv2.COLOR_BGR2RGB)
+            viewport.image(rgb_frame, channels="RGB", use_column_width=True)
+
+    # --- ORIGINAL VIDEO LOOP LOGIC ---
     else:
         video_file = st.sidebar.file_uploader("Upload Patrol Footage", type=["mp4", "avi"])
         if video_file:
@@ -73,43 +112,43 @@ if run_patrol:
             st.warning("Please upload a target patrol video file.")
             st.stop()
 
-    prev_time = 0
+        prev_time = 0
 
-    while cap.isOpened() and run_patrol:
-        ret, frame = cap.read()
-        if not ret:
-            st.info("Patrol Circuit Completed / Stream Disconnected.")
-            break
+        while cap.isOpened() and run_patrol:
+            ret, frame = cap.read()
+            if not ret:
+                st.info("Patrol Circuit Completed / Stream Disconnected.")
+                break
 
-        # FPS Calculation
-        curr_time = time.time()
-        fps = 1 / (curr_time - prev_time) if (curr_time - prev_time) > 0 else 30
-        prev_time = curr_time
+            # FPS Calculation
+            curr_time = time.time()
+            fps = 1 / (curr_time - prev_time) if (curr_time - prev_time) > 0 else 30
+            prev_time = curr_time
 
-        # YOLO11n Inference
-        results = model.predict(frame, conf=conf_thresh, verbose=False)
-        annotated_frame = results[0].plot()
+            # YOLO11n Inference
+            results = model.predict(frame, conf=conf_thresh, verbose=False)
+            annotated_frame = results[0].plot()
 
-        # Check for positive hazard triggers
-        detections = results[0].boxes
-        if len(detections) > 0:
-            top_conf = float(detections.conf[0])
-            threat_banner.error(f"🚨 CRITICAL HAZARD DETECTED!\n\n**Confidence:** {top_conf*100:.1f}%")
-            dispatch_log.code(
-                f"[DISPATCH] Sector A-7 Anomaly\n[TYPE] Combustion/Explosion\n[TIME] {time.strftime('%H:%M:%S')}",
-                language="text",
-            )
-        else:
-            threat_banner.success("🛡️ SECTOR CLEAR: Normal Patrol")
-            dispatch_log.caption("No localized anomalies registered.")
+            # Check for positive hazard triggers
+            detections = results[0].boxes
+            if len(detections) > 0:
+                top_conf = float(detections.conf[0])
+                threat_banner.error(f"🚨 CRITICAL HAZARD DETECTED!\n\n**Confidence:** {top_conf*100:.1f}%")
+                dispatch_log.code(
+                    f"[DISPATCH] Sector A-7 Anomaly\n[TYPE] Combustion/Explosion\n[TIME] {time.strftime('%H:%M:%S')}",
+                    language="text",
+                )
+            else:
+                threat_banner.success("🛡️ SECTOR CLEAR: Normal Patrol")
+                dispatch_log.caption("No localized anomalies registered.")
 
-        # Update Telemetry & Viewport
-        fps_metric.metric("Inference Velocity", f"{fps:.1f} FPS")
+            # Update Telemetry & Viewport
+            fps_metric.metric("Inference Velocity", f"{fps:.1f} FPS")
 
-        # Convert OpenCV BGR to Streamlit RGB
-        rgb_frame = cv2.cvtColor(annotated_frame, cv2.COLOR_BGR2RGB)
-        viewport.image(rgb_frame, channels="RGB", use_column_width=True)
+            # Convert OpenCV BGR to Streamlit RGB
+            rgb_frame = cv2.cvtColor(annotated_frame, cv2.COLOR_BGR2RGB)
+            viewport.image(rgb_frame, channels="RGB", use_column_width=True)
 
-    cap.release()
+        cap.release()
 else:
     threat_banner.info("🛰️ System Idle. Check 'INITIATE ACTIVE SCAN' to engage UAV sensors.")
