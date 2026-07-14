@@ -44,9 +44,27 @@ try:
 except Exception as e:
     st.sidebar.error(f"Payload Error: {e}. Check weight path.")
 
-# STUN server configuration for cloud WebRTC connections
+# ==========================================================
+# 🌐 WEBRTC CLOUD CONNECTION SETTINGS (STUN / TURN)
+# ==========================================================
+# To fix the "Connection taking longer than expected" error,
+# replace the placeholders below with your free TURN server 
+# credentials from a provider like Metered.ca.
+# ==========================================================
 RTC_CONFIGURATION = RTCConfiguration(
-    {"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]}
+    {
+        "iceServers": [
+            # Fallback STUN Server
+            {"urls": ["stun:stun.l.google.com:19302"]},
+            
+            # --- ADD YOUR TURN SERVER DETAILS BELOW ---
+            {
+                "urls": ["turn:YOUR_TURN_SERVER_URL_HERE:80"], # Example: turn:global.relay.metered.ca:80
+                "username": "YOUR_TURN_USERNAME_HERE", 
+                "credential": "YOUR_TURN_PASSWORD_HERE",
+            },
+        ]
+    }
 )
 
 # 4. Interface Grid Layout
