@@ -7,10 +7,11 @@ FYP-II: Real-Time Aerial Hazard Detection
 import tempfile
 import cv2
 import numpy as np
-from PIL import Image
 import streamlit as st
 import time
 from ultralytics import YOLO
+import av
+from streamlit_webrtc import webrtc_streamer, WebRtcMode, RTCConfiguration
 
 # 1. Page Configuration (Military/Corporate C2 Styling)
 st.set_page_config(
@@ -33,17 +34,20 @@ feed_source = st.sidebar.radio(
 
 run_patrol = st.sidebar.checkbox("▶ INITIATE ACTIVE SCAN", value=False)
 
-
 # 3. Load YOLO11n Model safely
 @st.cache_resource
 def load_payload(weights):
     return YOLO(weights)
 
-
 try:
     model = load_payload(model_path)
 except Exception as e:
     st.sidebar.error(f"Payload Error: {e}. Check weight path.")
+
+# STUN server configuration for cloud WebRTC connections
+RTC_CONFIGURATION = RTCConfiguration(
+    {"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]}
+)
 
 # 4. Interface Grid Layout
 col_viewport, col_telemetry = st.columns([3, 1])
@@ -61,47 +65,34 @@ with col_viewport:
 # 5. Main Detection Logic
 if run_patrol:
     
-    # --- CLOUD-SAFE WEBCAM LOGIC ---
+    # --- WEBRTC LIVE CONTINUOUS VIDEO LOGIC ---
     if feed_source == "Live Drone Telemetry (Webcam)":
-        st.info("☁️ **Cloud Mode:** Click the button below to capture and analyze a telemetry frame.")
-        img_file_buffer = st.camera_input("Capture Telemetry Frame")
+        st.info("☁️ **Cloud WebRTC Mode:** Click 'START' below to initialize live telemetry stream.")
         
-        if img_file_buffer is not None:
-            # Convert Streamlit browser image to OpenCV BGR format
-            bytes_data = img_file_buffer.getvalue()
-            frame = cv2.imdecode(np.frombuffer(bytes_data, np.uint8), cv2.IMREAD_COLOR)
-            
-            start_time = time.time()
+        # The callback function that processes each frame in real-time
+        def video_frame_callback(frame: av.VideoFrame) -> av.VideoFrame:
+            img = frame.to_ndarray(format="bgr24")
             
             # YOLO11n Inference
-            results = model.predict(frame, conf=conf_thresh, verbose=False)
-            annotated_frame = results[0].plot()
+            results = model.predict(img, conf=conf_thresh, verbose=False)
+            annotated_img = results[0].plot()
+            
+            return av.VideoFrame.from_ndarray(annotated_img, format="bgr24")
 
-            # FPS/Speed Calculation for single frame
-            infer_time = time.time() - start_time
-            fps = 1 / infer_time if infer_time > 0 else 30
+        with col_viewport:
+            webrtc_streamer(
+                key="uav-telemetry",
+                mode=WebRtcMode.SENDRECV,
+                rtc_configuration=RTC_CONFIGURATION,
+                video_frame_callback=video_frame_callback,
+                media_stream_constraints={"video": True, "audio": False},
+                async_processing=True,
+            )
+            
+        with col_telemetry:
+            st.warning("⚠️ **Telemetry Note:** In Live WebRTC mode, hazard logs and metrics are displayed directly on the optical stream. Text logs are disabled to maximize FPS.")
 
-            # Check for positive hazard triggers
-            detections = results[0].boxes
-            if len(detections) > 0:
-                top_conf = float(detections.conf[0])
-                threat_banner.error(f"🚨 CRITICAL HAZARD DETECTED!\n\n**Confidence:** {top_conf*100:.1f}%")
-                dispatch_log.code(
-                    f"[DISPATCH] Sector A-7 Anomaly\n[TYPE] Combustion/Explosion\n[TIME] {time.strftime('%H:%M:%S')}",
-                    language="text",
-                )
-            else:
-                threat_banner.success("🛡️ SECTOR CLEAR: Normal Patrol")
-                dispatch_log.caption("No localized anomalies registered.")
-
-            # Update Telemetry & Viewport
-            fps_metric.metric("Inference Velocity", f"{fps:.1f} FPS")
-
-            # Convert OpenCV BGR to Streamlit RGB
-            rgb_frame = cv2.cvtColor(annotated_frame, cv2.COLOR_BGR2RGB)
-            viewport.image(rgb_frame, channels="RGB", use_column_width=True)
-
-    # --- ORIGINAL VIDEO LOOP LOGIC ---
+    # --- ORIGINAL VIDEO LOOP LOGIC (Unchanged) ---
     else:
         video_file = st.sidebar.file_uploader("Upload Patrol Footage", type=["mp4", "avi"])
         if video_file:
@@ -120,16 +111,13 @@ if run_patrol:
                 st.info("Patrol Circuit Completed / Stream Disconnected.")
                 break
 
-            # FPS Calculation
             curr_time = time.time()
             fps = 1 / (curr_time - prev_time) if (curr_time - prev_time) > 0 else 30
             prev_time = curr_time
 
-            # YOLO11n Inference
             results = model.predict(frame, conf=conf_thresh, verbose=False)
             annotated_frame = results[0].plot()
 
-            # Check for positive hazard triggers
             detections = results[0].boxes
             if len(detections) > 0:
                 top_conf = float(detections.conf[0])
@@ -142,10 +130,8 @@ if run_patrol:
                 threat_banner.success("🛡️ SECTOR CLEAR: Normal Patrol")
                 dispatch_log.caption("No localized anomalies registered.")
 
-            # Update Telemetry & Viewport
             fps_metric.metric("Inference Velocity", f"{fps:.1f} FPS")
 
-            # Convert OpenCV BGR to Streamlit RGB
             rgb_frame = cv2.cvtColor(annotated_frame, cv2.COLOR_BGR2RGB)
             viewport.image(rgb_frame, channels="RGB", use_column_width=True)
 
