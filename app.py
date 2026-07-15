@@ -33,12 +33,10 @@ feed_source = st.sidebar.radio(
 
 run_patrol = st.sidebar.checkbox("▶ INITIATE ACTIVE SCAN", value=False)
 
-
 # 3. Load YOLO11n Model safely
 @st.cache_resource
 def load_payload(weights):
     return YOLO(weights)
-
 
 try:
     model = load_payload(model_path)
@@ -67,7 +65,6 @@ if run_patrol:
         img_file_buffer = st.camera_input("Capture Telemetry Frame")
         
         if img_file_buffer is not None:
-            # Convert Streamlit browser image to OpenCV BGR format
             bytes_data = img_file_buffer.getvalue()
             frame = cv2.imdecode(np.frombuffer(bytes_data, np.uint8), cv2.IMREAD_COLOR)
             
@@ -96,8 +93,6 @@ if run_patrol:
 
             # Update Telemetry & Viewport
             fps_metric.metric("Inference Velocity", f"{fps:.1f} FPS")
-
-            # Convert OpenCV BGR to Streamlit RGB
             rgb_frame = cv2.cvtColor(annotated_frame, cv2.COLOR_BGR2RGB)
             viewport.image(rgb_frame, channels="RGB", use_column_width=True)
 
@@ -120,16 +115,13 @@ if run_patrol:
                 st.info("Patrol Circuit Completed / Stream Disconnected.")
                 break
 
-            # FPS Calculation
             curr_time = time.time()
             fps = 1 / (curr_time - prev_time) if (curr_time - prev_time) > 0 else 30
             prev_time = curr_time
 
-            # YOLO11n Inference
             results = model.predict(frame, conf=conf_thresh, verbose=False)
             annotated_frame = results[0].plot()
 
-            # Check for positive hazard triggers
             detections = results[0].boxes
             if len(detections) > 0:
                 top_conf = float(detections.conf[0])
@@ -142,10 +134,7 @@ if run_patrol:
                 threat_banner.success("🛡️ SECTOR CLEAR: Normal Patrol")
                 dispatch_log.caption("No localized anomalies registered.")
 
-            # Update Telemetry & Viewport
             fps_metric.metric("Inference Velocity", f"{fps:.1f} FPS")
-
-            # Convert OpenCV BGR to Streamlit RGB
             rgb_frame = cv2.cvtColor(annotated_frame, cv2.COLOR_BGR2RGB)
             viewport.image(rgb_frame, channels="RGB", use_column_width=True)
 
