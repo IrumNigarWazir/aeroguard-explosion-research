@@ -8,6 +8,8 @@ import tempfile
 import time
 
 import cv2
+import numpy as np
+from PIL import Image
 import streamlit as st
 from ultralytics import YOLO
 
@@ -33,13 +35,8 @@ model_path = st.sidebar.text_input("Checkpoint Path", "best.pt")
 conf_thresh = st.sidebar.slider("Confidence Sensitivity", 0.10, 1.00, 0.45, 0.05)
 feed_source = st.sidebar.radio(
     "Optical Input Source",
-    ["Live Drone Telemetry (Webcam)", "Pre-Recorded UAV Patrol (MP4)"],
+    ["Snapshot Capture (Camera)", "Pre-Recorded UAV Patrol (MP4)"],
 )
-
-# Give the checkbox a stable key so we can poll st.session_state for a live
-# stop signal from inside the detection loop below.
-RUN_KEY = "run_patrol"
-run_patrol = st.sidebar.checkbox("▶ INITIATE ACTIVE SCAN", value=False, key=RUN_KEY)
 
 
 # ----------------------------------------------------------------------------
@@ -72,88 +69,94 @@ with col_viewport:
     st.subheader("📹 UAV Optical Stream")
     viewport = st.empty()
 
+
+def run_inference_and_display(frame_bgr, fps=None):
+    """Run YOLO on a single BGR frame and update the dashboard widgets."""
+    results = model.predict(frame_bgr, conf=conf_thresh, verbose=False)
+    annotated_frame = results[0].plot()
+
+    detections = results[0].boxes
+    if len(detections) > 0:
+        top_conf = float(detections.conf[0])
+        top_cls_id = int(detections.cls[0])
+        label = model.names.get(top_cls_id, "Unknown") if hasattr(model, "names") else "Unknown"
+
+        threat_banner.error(
+            f"🚨 CRITICAL HAZARD DETECTED!\n\n"
+            f"**Class:** {label}  |  **Confidence:** {top_conf * 100:.1f}%"
+        )
+        dispatch_log.code(
+            f"[DISPATCH] Sector A-7 Anomaly\n"
+            f"[TYPE] {label}\n"
+            f"[TIME] {time.strftime('%H:%M:%S')}",
+            language="text",
+        )
+    else:
+        threat_banner.success("🛡️ SECTOR CLEAR: Normal Patrol")
+        dispatch_log.caption("No localized anomalies registered.")
+
+    if fps is not None:
+        fps_metric.metric("Inference Velocity", f"{fps:.1f} FPS")
+    else:
+        fps_metric.metric("Mode", "Single Snapshot")
+
+    rgb_frame = cv2.cvtColor(annotated_frame, cv2.COLOR_BGR2RGB)
+    viewport.image(rgb_frame, channels="RGB", use_container_width=True)
+
+
 # ----------------------------------------------------------------------------
-# 5. Main Detection Loop
+# 5. Input Handling
 # ----------------------------------------------------------------------------
-if run_patrol and model is not None:
-    cap = None
-    try:
-        if feed_source == "Live Drone Telemetry (Webcam)":
-            cap = cv2.VideoCapture(0)
-            if not cap.isOpened():
-                st.error(
-                    "No webcam detected. Note: Streamlit Community Cloud has no "
-                    "camera access — webcam mode only works when run locally."
-                )
-                st.stop()
-        else:
-            video_file = st.sidebar.file_uploader(
-                "Upload Patrol Footage", type=["mp4", "avi", "mov"]
-            )
-            if video_file:
-                tfile = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
-                tfile.write(video_file.read())
-                tfile.flush()
-                cap = cv2.VideoCapture(tfile.name)
-            else:
-                st.warning("Please upload a target patrol video file.")
-                st.stop()
+if model is None:
+    threat_banner.info("🛰️ Awaiting valid payload (model) before sensors can engage.")
 
-        prev_time = time.time()
+elif feed_source == "Snapshot Capture (Camera)":
+    st.sidebar.caption("Uses your device's camera via the browser — works locally and on Cloud.")
+    photo = st.camera_input("📸 Capture UAV Optical Frame")
 
-        while cap.isOpened():
-            # Live stop signal: reflects the checkbox even mid-loop, since
-            # Streamlit updates session_state as soon as the widget changes.
-            if not st.session_state.get(RUN_KEY, False):
-                st.info("Scan halted by operator.")
-                break
+    if photo is not None:
+        image = Image.open(photo).convert("RGB")
+        frame_bgr = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
+        run_inference_and_display(frame_bgr)
+    else:
+        threat_banner.info("🛰️ System Idle. Capture a frame above to run a hazard scan.")
 
-            ret, frame = cap.read()
-            if not ret:
-                st.info("Patrol Circuit Completed / Stream Disconnected.")
-                break
+else:  # Pre-Recorded UAV Patrol (MP4)
+    run_patrol = st.sidebar.checkbox("▶ INITIATE ACTIVE SCAN", value=False, key="run_patrol")
+    video_file = st.sidebar.file_uploader("Upload Patrol Footage", type=["mp4", "avi", "mov"])
 
-            # FPS calculation
-            curr_time = time.time()
-            elapsed = curr_time - prev_time
-            fps = 1 / elapsed if elapsed > 0 else 0.0
-            prev_time = curr_time
+    if run_patrol:
+        if not video_file:
+            st.warning("Please upload a target patrol video file.")
+            st.stop()
 
-            # YOLO inference
-            results = model.predict(frame, conf=conf_thresh, verbose=False)
-            annotated_frame = results[0].plot()
+        cap = None
+        try:
+            tfile = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
+            tfile.write(video_file.read())
+            tfile.flush()
+            cap = cv2.VideoCapture(tfile.name)
 
-            # Hazard trigger check
-            detections = results[0].boxes
-            if len(detections) > 0:
-                top_conf = float(detections.conf[0])
-                top_cls_id = int(detections.cls[0])
-                label = model.names.get(top_cls_id, "Unknown") if hasattr(model, "names") else "Unknown"
+            prev_time = time.time()
 
-                threat_banner.error(
-                    f"🚨 CRITICAL HAZARD DETECTED!\n\n"
-                    f"**Class:** {label}  |  **Confidence:** {top_conf * 100:.1f}%"
-                )
-                dispatch_log.code(
-                    f"[DISPATCH] Sector A-7 Anomaly\n"
-                    f"[TYPE] {label}\n"
-                    f"[TIME] {time.strftime('%H:%M:%S')}",
-                    language="text",
-                )
-            else:
-                threat_banner.success("🛡️ SECTOR CLEAR: Normal Patrol")
-                dispatch_log.caption("No localized anomalies registered.")
+            while cap.isOpened():
+                if not st.session_state.get("run_patrol", False):
+                    st.info("Scan halted by operator.")
+                    break
 
-            fps_metric.metric("Inference Velocity", f"{fps:.1f} FPS")
+                ret, frame = cap.read()
+                if not ret:
+                    st.info("Patrol Circuit Completed / Stream Disconnected.")
+                    break
 
-            rgb_frame = cv2.cvtColor(annotated_frame, cv2.COLOR_BGR2RGB)
-            viewport.image(rgb_frame, channels="RGB", use_container_width=True)
+                curr_time = time.time()
+                elapsed = curr_time - prev_time
+                fps = 1 / elapsed if elapsed > 0 else 0.0
+                prev_time = curr_time
 
-    finally:
-        if cap is not None:
-            cap.release()
-
-elif run_patrol and model is None:
-    st.error("Cannot start scan — model failed to load. Check the checkpoint path in the sidebar.")
-else:
-    threat_banner.info("🛰️ System Idle. Check 'INITIATE ACTIVE SCAN' to engage UAV sensors.")
+                run_inference_and_display(frame, fps=fps)
+        finally:
+            if cap is not None:
+                cap.release()
+    else:
+        threat_banner.info("🛰️ System Idle. Upload footage and check 'INITIATE ACTIVE SCAN' to engage.")
